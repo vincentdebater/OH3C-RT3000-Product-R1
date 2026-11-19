@@ -8,48 +8,68 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: 检查代码仓库 (Checkout)
-      uses: actions/checkout@v4
+      - name: 检查代码仓库 (Checkout)
+        uses: actions/checkout@v4
 
-    - name: 初始化编译环境 (Setup Build Environment)
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison gawk gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget coccinelle ocaml
-        sudo apt-get clean
+      - name: 初始化编译环境 (Setup Build Environment)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison gawk gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget coccinelle ocaml
+          sudo apt-get clean
 
-    - name: 更新与安装软件源 (Update & Install Feeds)
-      run: |
-        # 必须在应用配置前更新和安装 Feeds，否则配置中的 LuCI 选项会被系统忽略
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+      - name: 缓存源码目录 (Cache dl directory)
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: openwrt-dl-backports-v5.12.19-1-${{ hashFiles('package/kernel/mac80211/Makefile', 'configs/mod-h3c-magic.config') }}
+          restore-keys: |
+            openwrt-dl-
 
-    - name: 应用自定义配置文件与内核补丁 (Apply Custom Config & Kernel Patch)
-      run: |
-        # 1. 复制基础配置文件
-        cp configs/mod-h3c-magic.config .config
-        
-        # 2. 运行 defconfig 生成最终配置
-        make defconfig
-        
-    - name: 下载源码依赖包 (Download Packages)
-      run: |
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -vf {} \;
+      - name: 准备 backports-source-v5.12.19-1 源码包
+        run: |
+          mkdir -p dl
+          if [ ! -s dl/backports-source-v5.12.19-1.tar.xz ]; then
+            rm -rf /tmp/bp_build && mkdir -p /tmp/bp_build
+            git clone --depth 1 --branch v5.12.19-1 --recursive https://git.kernel.org/pub/scm/linux/kernel/git/backports/backports.git /tmp/bp_build/backports-source-v5.12.19-1
+            cd /tmp/bp_build/backports-source-v5.12.19-1
+            git submodule update --init --recursive
+            TS=$(git log -1 --format='%ct')
+            rm -rf .git
+            cd /tmp/bp_build
+            tar --numeric-owner --owner=0 --group=0 --mode=a-s --sort=name --mtime="@${TS}" -c backports-source-v5.12.19-1 | xz -T0 -zc -7e > /tmp/bp_build/backports-source-v5.12.19-1.tar.xz
+            mv /tmp/bp_build/backports-source-v5.12.19-1.tar.xz "${GITHUB_WORKSPACE}/dl/backports-source-v5.12.19-1.tar.xz"
+            cd "${GITHUB_WORKSPACE}"
+            rm -rf /tmp/bp_build
+          fi
+          ls -lh dl/backports-source-v5.12.19-1.tar.xz
 
-    - name: 开始固件编译 (Compile Firmware)
-      run: |
-        echo "开始编译..."
-        make -j$(nproc) || make -j1 V=s
+      - name: 更新与安装软件源 (Update & Install Feeds)
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: 上传编译出的固件 (Upload Artifacts)
-      uses: actions/upload-artifact@v4
-      with:
-        name: H3C-RW3000-HW-A-Firmware
-        path: |
-          bin/targets/ipq50xx/arm/*.bin
-          bin/targets/ipq50xx/arm/*.img
-          bin/targets/ipq50xx/arm/config.buildinfo
+      - name: 应用自定义配置文件 (Apply Custom Config)
+        run: |
+          cp configs/mod-h3c-magic.config .config
+          make defconfig
+
+      - name: 下载源码依赖包 (Download Packages)
+        run: |
+          make download -j8
+
+      - name: 开始固件编译 (Compile Firmware)
+        run: |
+          echo "开始编译..."
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 上传编译出的固件 (Upload Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: H3C-RW3000-HW-A-Firmware
+          path: |
+            bin/targets/ipq50xx/arm/*.bin
+            bin/targets/ipq50xx/arm/*.img
+            bin/targets/ipq50xx/arm/config.buildinfo
